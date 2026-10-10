@@ -5,40 +5,44 @@
  * Checks all prerequisites and prints a pass/fail checklist.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { homedir } from 'os';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import * as yaml from 'js-yaml';
 import dotenv from 'dotenv';
 import { discoverPlugins, pluginRoots, pluginStatus } from './plugins/_engine.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
+import { validateProfile, EXAMPLE_PATH } from './validate-profile.mjs';
 import { resolveExtractorMode } from './browser-extract.mjs';
 import { parseConfigByExtension } from './jsonc-parse.mjs';
 import { validateFlags } from './lib/cli-flags.mjs';
 import { geminiNodeFloor } from './lib/gemini-node-floor.mjs';
+import { nodeFloor } from './lib/node-floor.mjs';
+import { findExperienceSections, parseCompanyHeading, EXPERIENCE_HEADING_NAMES } from './lib/cv-markdown.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 
 // CLIs the doctor recognises.
-const VALID_CLIS = ['claude', 'codex', 'opencode', 'antigravity', 'grok', 'qwen', 'kimi', 'copilot', 'gemini'];
+const VALID_CLIS = ['claude', 'codex', 'opencode', 'pi', 'antigravity', 'grok', 'qwen', 'kimi', 'copilot', 'gemini', 'hermes'];
 
 // --help ran the full diagnostic and printed the report at exit 0 (#2856), so
 // a mistyped flag was indistinguishable from a clean run — and --targe
 // silently diagnosed THIS checkout instead of the one asked for. Handled via
 // lib/cli-flags.mjs's validateFlags() (#2775), which rejects unrecognized
 // flags before --help so `--help --bogus` still errors.
-const KNOWN_FLAGS = ['--target', '--json', '--strict', '--cli', '--help', '-h'];
+const KNOWN_FLAGS = ['--target', '--json', '--init-templates', '--strict', '--cli', '--help', '-h'];
 
 // Both take their value as the next argv token.
 const VALUE_FLAGS = ['--target', '--cli'];
 
 const USAGE = `Usage:
   node doctor.mjs                    # run the setup diagnostic
-  node doctor.mjs --json             # machine-readable onboarding state
-  node doctor.mjs --strict           # also probe portals.yml ATS slugs (network)
+  node doctor.mjs --json             # read-only machine-readable onboarding state
+  node doctor.mjs --json --init-templates # create missing personalization files for onboarding
+  node doctor.mjs --strict           # also probe portals.yml entries (network)
   node doctor.mjs --target <path>    # diagnose another career-ops checkout
   node doctor.mjs --cli <name>       # check a specific CLI's integration
   node doctor.mjs --help             # show this message
@@ -54,11 +58,24 @@ CLIs: ${VALID_CLIS.join(', ')}`;
 validateFlags(argv, KNOWN_FLAGS, USAGE, { valueFlags: VALUE_FLAGS, requireOperand: true });
 
 const targetIdx = argv.indexOf('--target');
-const projectRoot =
-  targetIdx !== -1 && argv[targetIdx + 1] ? argv[targetIdx + 1] : getCareerOpsRoot();
+const explicitTarget = targetIdx !== -1 && argv[targetIdx + 1] ? argv[targetIdx + 1] : null;
+const projectRoot = explicitTarget || getCareerOpsRoot();
+// node_modules and .git belong to the CODE checkout, not the resolved data
+// root — under a split checkout (CAREER_OPS_ROOT/CAREER_OPS_DATA_DIR or the
+// .career-ops-data marker) those are two different directories, and neither
+// ever holds the other's artifacts (career-ops#3867 finding 6). --target is
+// the one case that means "diagnose this whole other checkout" — code layer
+// included — so it keeps pointing both roots at the same place, matching how
+// tests/doctor-tracked-bak-files.test.mjs already exercises it.
+const codeRoot = explicitTarget || __dirname;
 const JSON_OUT = argv.includes('--json');
-// --strict adds a live ATS-slug probe of portals.yml (network). Opt-in so the
-// default `npm run doctor` stays fast and fully offline.
+const INIT_TEMPLATES = argv.includes('--init-templates');
+if (INIT_TEMPLATES && !JSON_OUT) {
+  console.error('Error: --init-templates requires --json');
+  process.exit(1);
+}
+// --strict adds a live reachability probe of every portals.yml entry (network).
+// Opt-in so the default `npm run doctor` stays fast and fully offline.
 const STRICT = argv.includes('--strict');
 
 const cliIdx = argv.indexOf('--cli');
@@ -72,30 +89,7 @@ const yellow = (s) => isTTY ? `\x1b[33m${s}\x1b[0m` : s;
 const dim = (s) => isTTY ? `\x1b[2m${s}\x1b[0m` : s;
 
 function checkNodeVersion() {
-  const versionStr = process.versions.node;
-  const [major, minor] = versionStr.split('.').map(Number);
-  const hasSqlite = major > 22 || (major === 22 && minor >= 5);
-
-  if (hasSqlite) {
-    return { pass: true, label: `Node.js >= 22.5 (v${versionStr})` };
-  }
-
-  if (major >= 18) {
-    return {
-      warn: true,
-      label: `Node.js v${versionStr} detected. Node >= 22.5.0 is highly recommended because tracker.mjs (SQLite database indexing) requires node:sqlite.`,
-      fix: [
-        'Upgrade Node.js to v22.5.0 or later to enable full tracker database support.',
-        'The markdown tracker keeps working without it — the index is optional.',
-      ],
-    };
-  }
-
-  return {
-    pass: false,
-    label: `Node.js >= 18 (found v${versionStr})`,
-    fix: 'Install Node.js 22.5.0 or later from https://nodejs.org',
-  };
+  return nodeFloor(process.versions.node);
 }
 
 // El check mas frecuente de la comunidad, medido: 8 personas en 4 semanas
@@ -144,13 +138,48 @@ function checkBillingSource() {
   };
 }
 
+// Whether each package.json dependency resolves from the code checkout the way
+// Node will at run time — not whether a node_modules directory exists. That
+// was wrong both ways: a git worktree with no node_modules of its own resolves
+// through the main checkout's (Node walks up parent directories), and a
+// node_modules installed before a dependency was added (undici, #4445) still
+// exists while the import fails. Every script loads its dependencies with ESM
+// `import`, whose bare-specifier lookup is node_modules in the code root and
+// each ancestor directory — and nothing else: unlike require(), it ignores
+// NODE_PATH and the global folders, so a package found only there would pass
+// here and still fail to import. A package counts as installed when one of
+// those node_modules holds it. Checking for its package.json, rather than
+// resolving the package, never consults an `exports` map that refuses the
+// lookup and never loads the package — doctor runs on every session's first
+// message.
+function findMissingDependencies(root) {
+  const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'));
+  const lookupDirs = [];
+  for (let dir = resolve(root); ; dir = dirname(dir)) {
+    lookupDirs.push(join(dir, 'node_modules'));
+    if (dirname(dir) === dir) break;
+  }
+  return Object.keys(manifest.dependencies || {}).filter((name) =>
+    !lookupDirs.some((dir) => existsSync(join(dir, name, 'package.json'))));
+}
+
 function checkDependencies() {
-  if (existsSync(join(projectRoot, 'node_modules'))) {
+  let missing;
+  try {
+    missing = findMissingDependencies(codeRoot);
+  } catch (err) {
+    return {
+      pass: false,
+      label: `Dependencies could not be checked: package.json unreadable (${err.message})`,
+      fix: 'Run doctor from a career-ops checkout, or pass --target <checkout>',
+    };
+  }
+  if (missing.length === 0) {
     return { pass: true, label: 'Dependencies installed' };
   }
   return {
     pass: false,
-    label: 'Dependencies not installed',
+    label: `Dependencies missing: ${missing.join(', ')}`,
     fix: 'Run: npm install',
   };
 }
@@ -166,11 +195,32 @@ function checkTrackedBakFiles(root) {
   let raw;
   try {
     raw = execFileSync('git', ['ls-files', '-z', '--', '*.bak*'], {
-      cwd: root, encoding: 'utf-8', timeout: 5000,
+      cwd: root,
+      encoding: 'utf-8',
+      timeout: 5000,
+      // The non-checkout classification below reads Git's diagnostic. Keep
+      // this subprocess deterministic without changing the user's locale.
+      env: { ...process.env, LC_ALL: 'C', LANGUAGE: 'C' },
+      // stderr PIPED, not inherited. execFileSync's default hands the child our
+      // own stderr, so outside a checkout git printed
+      //   fatal: not a git repository (or any of the parent directories): .git
+      // before this catch ever ran — ahead of the JSON on `doctor --json`, which
+      // AGENTS.md has every agent run on the first message of every session. The
+      // catch below already handles that case; git's own message added nothing
+      // but the appearance of something being broken.
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-  } catch {
-    // Not a git checkout (or git unavailable) — nothing to check.
-    return { pass: true, label: 'Tracked .bak files: skipped (not a git checkout)' };
+  } catch (err) {
+    // Piping means the reason is ours to read rather than the terminal's. Not
+    // being a checkout is the expected case and stays a clean skip; anything
+    // else — git missing, a permissions problem, a timeout — is reported, since
+    // silently skipping those would claim a check ran that did not.
+    const stderr = String(err?.stderr ?? '');
+    if (/not a git repository/i.test(stderr) || err?.code === 'ENOENT') {
+      return { pass: true, label: 'Tracked .bak files: skipped (not a git checkout)' };
+    }
+    const detail = stderr.trim().split('\n')[0] || err?.message || 'unknown error';
+    return { warn: true, label: `Tracked .bak files: check could not run (${detail})` };
   }
   const paths = raw.split('\0').filter(Boolean);
   if (paths.length === 0) {
@@ -223,8 +273,8 @@ async function checkPlaywright() {
 }
 
 // Per-CLI MCP config registry. `plugins: true` marks a CLI whose MCP servers
-// can also arrive from an installed plugin, i.e. from outside the project root
-// (see isPlaywrightMcpFromPlugin).
+// can also arrive from outside the project root: from .claude.json or from an
+// installed plugin (see isPlaywrightMcpFromClaudeJson, isPlaywrightMcpFromPlugin).
 const MCP_CONFIGS = [
   { cli: 'claude',   files: ['.mcp.json', '.claude/settings.json', '.claude/settings.local.json'], plugins: true },
   // opencode.jsonc is JSONC: OpenCode accepts comments and trailing commas
@@ -274,14 +324,23 @@ function claudeConfigDir() {
 // offer-liveness verification in AGENTS.md cannot be met (#2752).
 //
 // Only ENABLED plugins count: an installed-but-disabled plugin still ships its
-// manifest on disk, but registers no server. Enumeration is driven by the two
-// manifests rather than by walking plugins/cache, so a large cache costs
-// nothing and disabled plugins are never read.
-function isPlaywrightMcpFromPlugin() {
+// manifest on disk, but registers no server. Claude Code merges enabledPlugins
+// across user config (~/.claude/settings.json), project config
+// (.claude/settings.json), and project-local config
+// (.claude/settings.local.json), with project settings taking precedence over
+// user settings (#3698). Enumeration is driven by the manifests rather than by
+// walking plugins/cache, so a large cache costs nothing and disabled plugins
+// are never read.
+function isPlaywrightMcpFromPlugin(root) {
   const configDir = claudeConfigDir();
 
-  const enabled = readConfigIfPresent(join(configDir, 'settings.json'))?.enabledPlugins;
-  if (!enabled || typeof enabled !== 'object') return false;
+  const enabled = [
+    readConfigIfPresent(join(configDir, 'settings.json'))?.enabledPlugins,
+    root ? readConfigIfPresent(join(root, '.claude', 'settings.json'))?.enabledPlugins : null,
+    root ? readConfigIfPresent(join(root, '.claude', 'settings.local.json'))?.enabledPlugins : null,
+  ].filter((e) => e && typeof e === 'object')
+    .reduce((acc, e) => Object.assign(acc, e), {});
+  if (!Object.keys(enabled).length) return false;
 
   const installed = readConfigIfPresent(join(configDir, 'plugins', 'installed_plugins.json'))?.plugins;
   if (!installed || typeof installed !== 'object') return false;
@@ -304,6 +363,28 @@ function isPlaywrightMcpFromPlugin() {
   });
 }
 
+// `claude mcp add` writes to .claude.json, not to any file in the checkout
+// (#4392): user scope under the top-level `mcpServers`, local scope (the
+// default) under `projects[<dir>].mcpServers`. The file lives in
+// CLAUDE_CONFIG_DIR when that is set, otherwise directly in the home dir -
+// beside ~/.claude/, not inside it.
+//
+// Claude Code on Windows can store one directory under both C:\... and C:/...
+// with the server under only one of them, while process.cwd() returns the
+// backslash form. So keys are compared with slashes and case folded, and every
+// matching key counts, not just the first.
+function isPlaywrightMcpFromClaudeJson(root) {
+  const dir = process.env.CLAUDE_CONFIG_DIR || homedir();
+  const cfg = readConfigIfPresent(join(dir, '.claude.json'));
+  if (!cfg || typeof cfg !== 'object') return false;
+  if (hasPlaywrightIn(cfg)) return true;
+  if (!root || !cfg.projects || typeof cfg.projects !== 'object') return false;
+  const norm = (p) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const target = norm(root);
+  return Object.entries(cfg.projects)
+    .some(([key, project]) => norm(key) === target && hasPlaywrightIn(project));
+}
+
 function isPlaywrightMcpConfigured(root, activeCli) {
   const entry = MCP_CONFIGS.find((c) => c.cli === activeCli);
   if (!entry) return false; // known CLI but no MCP file mapping; caller warns
@@ -314,7 +395,8 @@ function isPlaywrightMcpConfigured(root, activeCli) {
   if (inProject) return true;
   // Gated behind the project scan, so an already-configured project pays no
   // extra I/O and non-plugin CLIs never touch the user config dir.
-  return entry.plugins === true && isPlaywrightMcpFromPlugin();
+  return entry.plugins === true
+    && (isPlaywrightMcpFromClaudeJson(root) || isPlaywrightMcpFromPlugin(root));
 }
 
 // CLI resolution: --cli flag > $CAREER_OPS_CLI > .env (CAREER_OPS_CLI=...) >
@@ -372,7 +454,7 @@ function checkPlaywrightMcp(root, activeCli) {
     label: `Playwright MCP tools not detected (active CLI: ${activeCli})`,
     fix: [
       entry.plugins
-        ? `No project-level MCP config, and no enabled plugin providing one, was detected for ${activeCli}.`
+        ? `No project-level MCP config, no server in .claude.json (~/.claude.json, or $CLAUDE_CONFIG_DIR/.claude.json when set), and no enabled plugin providing one, was detected for ${activeCli}.`
         : `No project-level MCP config was detected for ${activeCli}.`,
       activeCli === 'opencode'
         ? 'Add the Playwright MCP server to opencode.json (see opencode.example.json) or pass --cli <name> if you actually run a different CLI.'
@@ -388,7 +470,7 @@ function checkPlaywrightMcp(root, activeCli) {
 function checkScanExtractor(root) {
   const mode = resolveExtractorMode(join(root, 'config', 'profile.yml'));
   if (mode === 'cli') {
-    if (existsSync(join(root, 'browser-extract.mjs'))) {
+    if (existsSync(join(__dirname, 'browser-extract.mjs'))) {
       return { pass: true, label: 'Scan extractor: cli (browser-extract.mjs)' };
     }
     return {
@@ -491,28 +573,45 @@ function checkAutoDir(name) {
   }
 }
 
-// --strict only: probe the ATS slug of every tracked company in portals.yml so
-// a typo'd slug (which 404s silently on scans) surfaces here. Skipped gracefully
-// when portals.yml is absent. Delegates to verify-portals.mjs so there is one
-// slug-probing implementation. Network-bound, hence opt-in.
+// --strict only: probe every portals.yml entry (tracked_companies and job_boards)
+// so a typo'd slug or a dead board — either of which 404s silently on scans —
+// surfaces here. Skipped gracefully when portals.yml is absent. Delegates to
+// verify-portals.mjs so there is one probing implementation. Network-bound,
+// hence opt-in.
 async function checkPortalSlugs(root) {
   const portalsPath = join(root, 'portals.yml');
   if (!existsSync(portalsPath)) {
-    return { pass: true, label: 'ATS slugs: no portals.yml yet (skipped)' };
+    return { pass: true, label: 'Portal entries: no portals.yml yet (skipped)' };
   }
   try {
     const { verifyPortalsFile } = await import('./verify-portals.mjs');
-    const { results } = await verifyPortalsFile(portalsPath);
+    const { loadProviders } = await import('./providers/_registry.mjs');
+    const { makeHttpCtx } = await import('./providers/_http.mjs');
+    // Load the same provider plugins the scanner uses so tier 2 runs: without
+    // them every non-ATS entry (all job_boards, plus any Workday/Avature/…
+    // tracked_companies) resolves to an un-actionable "skipped" and a broken
+    // one would never reach "missing" — a false pass.
+    const providers = await loadProviders(join(__dirname, 'providers'));
+    const { results } = await verifyPortalsFile(portalsPath, {
+      providers,
+      httpCtx: makeHttpCtx(),
+    });
+    // Only 'missing' is a failure — a live probe that 404'd. 'skipped' (no
+    // provider claimed the entry) is left informational here, matching
+    // `verify-portals --strict`, which also fails only on 'missing'; an entry
+    // that resolves solely through a local parser is skipped by this path by
+    // design and must not fail the check.
     const unresolved = results.filter((r) => r.status === 'missing');
     if (unresolved.length === 0) {
-      return { pass: true, label: 'All ATS slugs in portals.yml resolve' };
+      return { pass: true, label: 'All portals.yml entries resolve' };
     }
     return {
       pass: false,
-      label: `${unresolved.length} ATS slug(s) in portals.yml do not resolve`,
+      label: `${unresolved.length} portals.yml entr${unresolved.length === 1 ? 'y' : 'ies'} do not resolve`,
       fix: [
         ...unresolved.map((r) => {
-          let line = `${r.name}: ${r.ats || '?'}/${r.slug || '?'} — ${r.reason || 'unresolved'}`;
+          const src = r.ats ? `${r.ats}/${r.slug}` : (r.provider || '?');
+          let line = `${r.name}: ${src} — ${r.reason || 'unresolved'}`;
           if (r.suggested) line += ` → try ${r.suggested.ats}/${r.suggested.slug}`;
           return line;
         }),
@@ -520,7 +619,7 @@ async function checkPortalSlugs(root) {
       ],
     };
   } catch (err) {
-    return { warn: true, label: `ATS slug check skipped: ${err.message}` };
+    return { warn: true, label: `Portal entry check skipped: ${err.message}` };
   }
 }
 
@@ -552,10 +651,20 @@ function checkPipelineFile() {
 
 // Discover plugins + their non-secret config block, synchronously. Used by both
 // the human check and the --json onboarding state.
+// A parse failure is REPORTED, not folded into {}. An unreadable config and a
+// config with nothing enabled produced the same empty object, so doctor — the
+// one tool whose job is to say what is wrong — answered "off" for every plugin
+// the user had actually switched on, and said nothing about why.
+//
+// Returns the config plus the parse error, so callers can tell the two apart.
 function readPluginConfigSync(root) {
   const cfgPath = join(root, 'config', 'plugins.yml');
-  if (!existsSync(cfgPath)) return {};
-  try { return yaml.load(readFileSync(cfgPath, 'utf8')) || {}; } catch { return {}; }
+  if (!existsSync(cfgPath)) return { cfg: {}, error: null };
+  try {
+    return { cfg: yaml.load(readFileSync(cfgPath, 'utf8')) || {}, error: null };
+  } catch (err) {
+    return { cfg: {}, error: String(err.message).split('\n')[0] };
+  }
 }
 
 // Plugin layer health: list discovered plugins + whether each enabled one's keys
@@ -564,7 +673,17 @@ function checkPlugins(root) {
   let manifests;
   try { manifests = discoverPlugins(pluginRoots(root)); } catch { return { pass: true, label: 'Plugins: none' }; }
   if (manifests.length === 0) return { pass: true, label: 'Plugins: none installed' };
-  const cfg = readPluginConfigSync(root);
+  const { cfg, error: cfgError } = readPluginConfigSync(root);
+  // Reported before the per-plugin lines, because when the config did not parse
+  // every one of those lines is derived from an empty object and says "off"
+  // regardless of what the user configured.
+  if (cfgError) {
+    return {
+      warn: true,
+      label: `Plugins: config/plugins.yml did not parse (${cfgError}) — every plugin below reads as off`,
+      fix: ['Fix the YAML in config/plugins.yml. Until then `plugins.mjs enable/disable` will refuse to write to it.'],
+    };
+  }
   const lines = [];
   const fixes = [];
   for (const m of manifests) {
@@ -574,6 +693,69 @@ function checkPlugins(root) {
   }
   const label = `Plugins: ${lines.join(', ')}`;
   return fixes.length ? { warn: true, label, fix: fixes } : { pass: true, label };
+}
+
+// profile.yml steers scoring targets, output language, spend tier, CV format and
+// location policy — and the existence check above is all that ever looked at it.
+// Every reader does `profile?.language?.output` and takes the fallback when the
+// key is missing, which is indistinguishable from the key being MISSPELLED. So
+// `langauge: {output: ja}` produces English output and no signal anywhere.
+//
+// WARN, never FAIL, like the plugin check below it: an unknown key is a typo,
+// not a broken install, and refusing to run would be a worse answer than naming
+// it.
+// cv.md exists but in a shape the CV checks cannot read (#4879). The prereq
+// check only proves the file is there; cv-title-check.mjs and
+// verify-cv-structure.mjs locate jobs through lib/cv-markdown.mjs, and a cv.md
+// whose Experience section they cannot find makes both run against nothing.
+// They do say so per run, but only once a tailored CV is already being built;
+// this says it at setup time. A warning, never a failure: cv.md is the user's
+// file and career-ops still works with it.
+function checkCvShape(root) {
+  const cvPath = join(root, 'cv.md');
+  if (!existsSync(cvPath)) return null;   // the prereq check owns "absent"
+  let text;
+  try {
+    text = readFileSync(cvPath, 'utf-8');
+  } catch (err) {
+    return { warn: true, label: `cv.md could not be read (${err.message})` };
+  }
+  const sections = findExperienceSections(text);
+  // Same entry rule verify-cv-structure.mjs parses with, so a stray
+  // "### Notes" under Experience is not counted as a job.
+  const entries = sections.flat().filter((line) => parseCompanyHeading(line) !== null).length;
+  if (entries > 0) {
+    return { pass: true, label: `cv.md: Experience section recognized (${entries} entr${entries === 1 ? 'y' : 'ies'})` };
+  }
+  return {
+    warn: true,
+    label: sections.length === 0
+      ? 'cv.md: no Experience section the CV checks recognize — title and structure checks will not run'
+      : 'cv.md: Experience section has no "### Company — Location" entries — title and structure checks will not run',
+    fix: [
+      `Name the section ${EXPERIENCE_HEADING_NAMES.map((n) => `"## ${n}"`).join(', ')}`,
+      'Start each job with "### Company — Location", then a bold **Title** line, then a dates line (see examples/cv-example.md)',
+    ],
+  };
+}
+
+function checkProfileShape(root) {
+  const profilePath = process.env.CAREER_OPS_PROFILE || join(root, 'config', 'profile.yml');
+  if (!existsSync(profilePath)) return null;   // the prereq check owns "absent"
+  let findings;
+  try {
+    const example = existsSync(EXAMPLE_PATH) ? readFileSync(EXAMPLE_PATH, 'utf-8') : '';
+    findings = validateProfile(readFileSync(profilePath, 'utf-8'), example).findings;
+  } catch (err) {
+    return { warn: true, label: `config/profile.yml could not be read (${err.message})` };
+  }
+  const actionable = findings.filter((f) => f.level !== 'info');
+  if (actionable.length === 0) return { pass: true, label: 'config/profile.yml: shape OK' };
+  return {
+    warn: true,
+    label: `config/profile.yml: ${actionable.length} issue${actionable.length === 1 ? '' : 's'} — settings under an unrecognized key have no effect`,
+    fix: actionable.map((f) => f.message),
+  };
 }
 
 async function main() {
@@ -589,13 +771,15 @@ async function main() {
     geminiNodeFloor(activeCli, process.versions.node),
     checkBillingSource(),
     checkDependencies(),
-    checkTrackedBakFiles(projectRoot),
+    checkTrackedBakFiles(codeRoot),
     await checkPlaywright(),
-    checkPlaywrightMcp(projectRoot, activeCli),
+    checkPlaywrightMcp(process.cwd(), activeCli),
     checkScanExtractor(projectRoot),
     ...USER_LAYER_PREREQS.map(checkPrereq),
     checkFonts(),
     checkPersonalization(projectRoot),
+    checkProfileShape(projectRoot),
+    checkCvShape(projectRoot),
     checkAutoDir('data'),
     checkPipelineFile(),
     checkAutoDir('output'),
@@ -603,7 +787,7 @@ async function main() {
     checkPlugins(projectRoot),
   ].filter(Boolean);
 
-  // Network-bound ATS slug probe — only under --strict.
+  // Network-bound portals.yml reachability probe — only under --strict.
   if (STRICT) {
     checks.push(await checkPortalSlugs(projectRoot));
   }
@@ -657,8 +841,8 @@ async function main() {
 //     into every A-F evaluation, so offers are scored against a stranger.
 //   _brief.md unedited hands the triage first pass literal `{placeholders}`
 //     instead of the candidate's archetypes, comp floor and hard DQ criteria.
-// doctor auto-copies both from their templates on first run, so "the file
-// exists" is guaranteed and tells us nothing — only its CONTENT does.
+// Explicit onboarding copies both from their templates, so existence alone
+// tells us nothing about personalization — only the CONTENT does.
 const PERSONALIZATION_FILES = [
   {
     path: 'modes/_profile.md',
@@ -685,7 +869,8 @@ function unpersonalizedFiles(root) {
   const out = [];
   for (const { path, template, impact } of PERSONALIZATION_FILES) {
     const targetPath = join(root, ...path.split('/'));
-    const templatePath = join(root, ...template.split('/'));
+    const rootTemplatePath = join(root, ...template.split('/'));
+    const templatePath = existsSync(rootTemplatePath) ? rootTemplatePath : join(__dirname, ...template.split('/'));
     if (!existsSync(targetPath) || !existsSync(templatePath)) continue;
     let target, tpl;
     try {
@@ -739,9 +924,11 @@ function onboardingState(root) {
     const targetPath = join(root, ...target.split('/'));
     const rootTemplatePath = join(root, ...template.split('/'));
     const templatePath = existsSync(rootTemplatePath) ? rootTemplatePath : join(__dirname, ...template.split('/'));
-    if (!existsSync(targetPath) && existsSync(templatePath)) {
+    // Diagnosis must not create user files. Copy only during explicit onboarding.
+    if (INIT_TEMPLATES && !existsSync(targetPath) && existsSync(templatePath)) {
       try {
-        copyFileSync(templatePath, targetPath);
+        mkdirSync(dirname(targetPath), { recursive: true });
+        copyFileSync(templatePath, targetPath, constants.COPYFILE_EXCL);
         autoCopied.push(target);
       } catch {
         // Gracefully handle read-only filesystems (e.g., CI/CD or containerized environments)
@@ -755,13 +942,22 @@ function onboardingState(root) {
 
   const { cli: activeCli, source: cliSource, warning: cliWarning } = resolveActiveCli();
 
-  const mcpCheck = checkPlaywrightMcp(root, activeCli);
+  // MCP project configuration belongs to the launch checkout. `root` is the
+  // user-data layer and may point elsewhere under split-checkout installs.
+  const mcpCheck = checkPlaywrightMcp(process.cwd(), activeCli);
   const unpersonalized = unpersonalizedFiles(root);
-  const bakCheck = checkTrackedBakFiles(root);
+  // Every other check in this function is data-layer and correctly uses this
+  // function's own `root` parameter. The tracked-.bak check is the one
+  // code-layer exception (#3867 finding 6) — it must read the module-level
+  // codeRoot (the code checkout), which only differs from `root` when a real
+  // split-checkout data root is in play and no --target was given.
+  const bakCheck = checkTrackedBakFiles(codeRoot);
+  const cvShape = checkCvShape(root);
   const warnings = [
     ...(cliWarning ? [cliWarning] : []),
     ...(mcpCheck?.warn ? [`${mcpCheck.label}\n→ ${[].concat(mcpCheck.fix || []).join('\n  ')}`] : []),
     ...(bakCheck.warn ? [`${bakCheck.label}\n→ ${[].concat(bakCheck.fix || []).join('\n  ')}`] : []),
+    ...(cvShape?.warn ? [`${cvShape.label}\n→ ${[].concat(cvShape.fix || []).join('\n  ')}`] : []),
     ...unpersonalized.map((u) => `${u.path} ${u.reason} — ${u.impact}\n→ Personalize it from cv.md before running evaluations.`),
   ];
 
@@ -770,8 +966,12 @@ function onboardingState(root) {
     : {};
 
   let plugins = [];
+  let pluginConfigError = null;
   try {
-    const cfg = readPluginConfigSync(root);
+    const { cfg, error } = readPluginConfigSync(root);
+    // Travels in the JSON so a consumer can tell "nothing enabled" from "the
+    // config did not parse" — the two used to be the same empty list.
+    pluginConfigError = error;
     plugins = discoverPlugins(pluginRoots(root)).map((m) => {
       const s = pluginStatus(m, cfg);
       return { id: m.id, hooks: m.hooks, enabled: s.enabled, missingEnv: s.missingEnv };
@@ -788,6 +988,9 @@ function onboardingState(root) {
     warnings,
     autoCopied,
     plugins,
+    // Only present when it happened, so existing consumers see no new key on a
+    // healthy run and a broken config is impossible to read as "none enabled".
+    ...(pluginConfigError ? { pluginConfigError } : {}),
     playwright_mcp: playwrightMcp,
     active_cli: activeCli,
     cli_source: cliSource,
