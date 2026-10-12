@@ -1,0 +1,195 @@
+%-------------------------
+% Resume in Latex
+% Author : Deep Santoshwar
+% Based off of: https://github.com/deedy/Deedy-Resume
+%------------------------
+
+\documentclass[letterpaper,11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\usepackage{multicol}
+\setlength{\multicolsep}{-3.0pt}
+\setlength{\columnsep}{-1pt}
+
+\pagestyle{fancy}
+\fancyhf{} % clear all header and footer fields
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Adjust margins
+\addtolength{\oddsidemargin}{-0.7in}
+\addtolength{\evensidemargin}{-0.6in}
+\addtolength{\textwidth}{1.4in}
+\addtolength{\topmargin}{-.8in}
+\addtolength{\textheight}{1.75in}
+
+\urlstyle{same}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+% Sections formatting
+\titleformat{\section}{
+  \vspace{-5pt}\scshape\raggedright\large\bfseries
+}{}{0em}{}[\color{black}\titlerule \vspace{-6pt}]
+
+% Ensure that generate pdf is machine readable/ATS parsable.
+% pdfTeX-only; guarded so the same file also compiles under XeTeX/LuaTeX
+% (e.g. tectonic), which already emit correct Unicode text extraction.
+\ifdefined\pdfgentounicode
+  \input{glyphtounicode}
+  \pdfgentounicode=1
+\fi
+
+%-------------------------
+% Custom commands
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-1pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-3pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-6pt}
+}
+
+\newcommand{\resumeSubSubheading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \textit{\small#1} & \textit{\small #2} \\
+    \end{tabular*}\vspace{-5pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-5pt}
+}
+
+\newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-2pt}}
+
+%-------------------------------------------
+%%%%%%  RESUME STARTS HERE  %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\begin{document}
+
+%----------HEADING----------
+\begin{center}
+    \textbf{\Huge Deep Santoshwar} \\ \vspace{2pt}
+    \small AI Engineer $|$ Pune, India $|$ +91 9834577439 $|$ \href{mailto:deepsantoshwar7@gmail.com}{deepsantoshwar7@gmail.com} \\
+    \href{https://www.deepsantoshwar.com}{\textcolor{blue}{\underline{\textbf{deepsantoshwar.com}}}} $|$
+    \href{https://linkedin.com/in/deep-santoshwar/}{\textcolor{blue}{\underline{linkedin.com/in/deep-santoshwar}}} $|$
+    \href{https://github.com/bardock-2393}{\textcolor{blue}{\underline{github.com/bardock-2393}}}
+\end{center}
+
+%-----------SUMMARY-----------
+\section{Summary}
+\small{AI Engineer with 3+ years in Python and FastAPI, shipping real-time LLM pipelines, multi-agent RAG systems, and voice AI agents in production, backed by strong cloud and DevOps experience.}
+
+%-----------SKILLS------------
+\section{Technical Skills}
+\begin{itemize}[leftmargin=0.15in, label={}]
+\small{\item{
+    \textbf{AI \& LLM}{: Streaming LLMs, model routing, prompt design, LLM evals, RAG, AI agents, LangGraph, LangSmith, ChromaDB, OpenRouter, AWS Bedrock, Claude, Gemini} \\
+    \textbf{Voice AI}{: LiveKit, Pipecat, Gemini Live, Twilio, AssemblyAI} \\
+    \textbf{Backend \& Desktop}{: Python, FastAPI, PHP Laravel, React, Electron, REST APIs} \\
+    \textbf{Cloud \& DevOps}{: GCP, AWS (EC2, S3, Lambda, Glue), Docker, GitHub Actions, CI/CD, Nginx} \\
+    \textbf{Data \& Observability}{: PostgreSQL, MongoDB, MySQL, DynamoDB, Redshift, Kafka, Sentry, PostHog, ELK Stack}
+}}
+\end{itemize}
+
+%-----------EXPERIENCE-----------
+\section{Work Experience}
+\resumeSubHeadingListStart
+
+\resumeSubheading
+{Software Engineer (Contract)}{December 2025 - October 2026}
+{\href{https://aiapply.co}{\textcolor{blue}{\underline{AIApply}}} -- \href{https://aiapply.co/interview-answer-buddy}{\textcolor{blue}{\underline{Interview Answer Buddy}}}}{UK (Remote)}
+\resumeItemListStart
+\resumeItem{Developed core AI features of Interview Answer Buddy, a cross-platform Electron desktop app on AIApply, a platform used by 2M+ job seekers, giving candidates real-time AI assistance during live interviews}
+\resumeItem{Engineered a real-time pipeline streaming live speech transcription (AssemblyAI) into streamed LLM answers with model routing and fallback via OpenRouter, served by FastAPI on Docker and GCP, powering 10,000+ interview sessions}
+\resumeItem{Designed and iterated on answer prompts, testing response quality to improve AI answer accuracy}
+\resumeItem{Shipped post-interview AI features, UI improvements, and automatic app updates for the desktop client}
+\resumeItem{Integrated Sentry and PostHog for production monitoring; joined user troubleshooting calls and wrote support docs}
+\resumeItemListEnd
+
+\resumeSubheading
+{Software Developer}{April 2025 - October 2025}
+{\href{https://www.exhibit.co.in}{\textcolor{blue}{\underline{Exhibit BBC Top Gear}}} -- \href{https://app.exhibit.social}{\textcolor{blue}{\underline{Exhibit Social}}}}{Mumbai, MH, IN}
+\resumeItemListStart
+\resumeItem{Built Exhibit Social, an influencer campaign management SaaS managing 1M+ global influencers and 2,000+ brands, using PHP Laravel, Python, PostgreSQL, React+Vite, and GCP}
+\resumeItem{Created a 2-agent LangGraph reporting workflow (analyst agent for campaign data, writer agent for reports) with RAG on ChromaDB and LangSmith tracing, generating performance summaries and ROI analytics}
+\resumeItem{Delivered a high-traffic voting system for the InfluencerX Fashion Awards with Nginx load balancing, and a web scraper for BBC Top Gear India}
+\resumeItemListEnd
+
+\resumeSubheading
+{Jr. DevOps Engineer}{April 2024 - April 2025}
+{\href{https://pristine-code.com}{\textcolor{blue}{\underline{Pristine IT Code Pvt Ltd}}}}{Mumbai, MH, IN}
+\resumeItemListStart
+\resumeItem{Automated CI/CD pipelines with GitHub Actions, cutting deployment time by 40\%, and set up ELK dashboards that improved log analysis by 30\%}
+\resumeItem{Managed four production apps on AWS EC2 with uptime monitoring, and led a cloud migration that cut operational costs by 20\%}
+\resumeItemListEnd
+
+\resumeSubheading
+{Big Data \& Cloud Apprentice}{July 2023 - December 2023}
+{\href{https://www.ust.com/en}{\textcolor{blue}{\underline{Abzooba (UST)}}}}{Pune, MH, IN}
+\resumeItemListStart
+\resumeItem{Built data pipelines on AWS (Batch, Lambda, Glue, S3, DynamoDB) and an eCommerce pipeline with Kafka and Redshift, improving MySQL integration efficiency by 30\%}
+\resumeItemListEnd
+
+\resumeSubHeadingListEnd
+
+%-----------PROJECTS-----------
+\section{Projects}
+\resumeSubHeadingListStart
+\resumeProjectHeading
+{\textbf{Voice AI Agent} $|$ \emph{Real-time telephony agent (closed source)}}{}
+\resumeItemListStart
+\resumeItem{Delivered a real-time voice AI agent with LiveKit, Pipecat, Gemini Live, and Twilio, automating 4 inbound call workflows: lead qualification, appointment booking and rescheduling, orders, and support}
+\resumeItem{Implemented VAD, streaming responses, and barge-in handling for natural conversation, plus tool calling for bookings and order lookups and live call transfer to human agents}
+\resumeItemListEnd
+\resumeProjectHeading
+{\textbf{Airblander} $|$ \emph{Open-source Claude Code plugin}}{\href{https://airblander.vercel.app/}{\textcolor{blue}{\underline{airblander.vercel.app}}}}
+\resumeItemListStart
+\resumeItem{Launched an open-source plugin that stops AI coding agents from writing against stale SDK docs by blocking edits until current documentation is fetched}
+\resumeItemListEnd
+\resumeSubHeadingListEnd
+
+%-----------EDUCATION-----------
+\section{Education \& Certifications}
+\resumeSubHeadingListStart
+\resumeSubheading
+{MIT Academy of Engineering}{April 2019 - May 2023}
+{Bachelor of Technology in Information Technology}{CGPA: 8.55}
+\resumeSubHeadingListEnd
+\begin{itemize}[leftmargin=0.15in, label={}]
+\small{\item{AWS Certified Cloud Practitioner $|$ Microsoft Azure Fundamentals (AZ-900) $|$ 30+ GeeksforGeeks articles (28K+ views)}}
+\end{itemize}
+
+\end{document}

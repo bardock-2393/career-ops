@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude_ai_Google_Drive__create_file",
+      "mcp__claude_ai_Google_Drive__search_files",
+      "mcp__claude_ai_Google_Drive__list_recent_files",
+      "mcp__claude_ai_Google_Sheets__append_values",
+      "mcp__claude_ai_Google_Sheets__update_values",
+      "mcp__claude_ai_Google_Sheets__get_values",
+      "mcp__claude_ai_Google_Sheets__get_spreadsheet"
+    ]
+  }
+}
